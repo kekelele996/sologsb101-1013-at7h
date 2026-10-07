@@ -46,7 +46,16 @@ const router = useRouter()
 const reefStore = useReefStore()
 const surveyStore = useSurveyStore()
 
-const EMPTY_COUNTS: CountMap = { reefs: 0, sites: 0, belts: 0, corals: 0, fishes: 0 }
+const EMPTY_COUNTS: CountMap = {
+  reefs: 0,
+  sites: 0,
+  belts: 0,
+  corals: 0,
+  fishes: 0,
+  voyages: 0,
+  reviewForms: 0,
+  reviewItems: 0
+}
 
 const counts = ref<CountMap>(EMPTY_COUNTS)
 const lastBackupAt = ref<string | null>(null)
@@ -258,6 +267,13 @@ onMounted(() => {
         <el-button type="primary" :icon="Download" :loading="busy" @click="handleExport">导出 JSON</el-button>
       </div>
     </div>
+
+    <el-alert
+      type="info"
+      :closable="false"
+      show-icon
+      title="口径说明：礁区覆盖率与白化指数只按审过的批次算——未送审、已挂起或被驳回的样带不计入；结论与导出共用同一口径。"
+    />
 
     <el-alert v-if="notice" type="success" :closable="false" show-icon :title="notice" />
 
@@ -479,12 +495,14 @@ onMounted(() => {
         <el-descriptions-item label="礁区 / 站位">{{ counts.reefs }} / {{ counts.sites }}</el-descriptions-item>
         <el-descriptions-item label="样带 / 珊瑚记录">{{ counts.belts }} / {{ counts.corals }}</el-descriptions-item>
         <el-descriptions-item label="鱼类计数">{{ counts.fishes }}</el-descriptions-item>
+        <el-descriptions-item label="航次批次 / 审核单">{{ counts.voyages }} / {{ counts.reviewForms }}</el-descriptions-item>
+        <el-descriptions-item label="审核条目">{{ counts.reviewItems }}</el-descriptions-item>
         <el-descriptions-item label="最近备份时间">
           {{ lastBackupAt ? new Date(lastBackupAt).toLocaleString('zh-CN') : '尚未备份' }}
         </el-descriptions-item>
       </el-descriptions>
       <p class="gb-hint">
-        数据仅保存在当前浏览器 IndexedDB 中，换浏览器或清空站点数据后不会自动跟随，请通过 JSON 备份迁移。
+        数据仅保存在当前浏览器 IndexedDB 中，换浏览器或清空站点数据后不会自动跟随，请通过 JSON 备份迁移。导出快照包含 reefs / sites / belts / corals / fishes / voyages / reviewForms / reviewItems 八张表。
       </p>
     </el-card>
   </section>

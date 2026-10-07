@@ -53,7 +53,8 @@ const rows = computed(() => {
     return true
   })
   return sites.map((site) => {
-    const belts = beltStore.beltsOfSite(site.id)
+    // 只计入通过审核的样带
+    const belts = surveyStore.approvedBelts.filter((belt) => belt.siteId === site.id)
     const beltIds = new Set(belts.map((belt) => belt.id))
     const corals = surveyStore.corals.filter((coral) => beltIds.has(coral.beltId))
     const index = bleachIndex(corals)

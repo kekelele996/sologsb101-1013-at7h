@@ -2,6 +2,8 @@
 
 面向礁区生态普查队的纯前端单页应用：按站位布设样带，逐条记录底质、珊瑚分类覆盖与鱼类计数，并评定白化等级。数据全部保存在浏览器本地（IndexedDB），不依赖任何后端服务或外部接口。
 
+**两边分开**：普查队按航次批次管样带、珊瑚覆盖和鱼类计数；院所审核组只管审核单和驳回条目。礁区覆盖率和白化指数只按审过的批次算——未送审、已挂起或被驳回的样带不计入结论，结论与导出共用同一口径。
+
 ## 一、Docker 一键启动（推荐）
 
 ```bash
@@ -30,9 +32,9 @@ docker compose up -d --build      # 修改代码后重新构建
 | 语言 | TypeScript 5.7（strict） | 构建脚本执行 `vue-tsc --noEmit` 类型检查 |
 | UI 组件 | Element Plus 2.9 + @element-plus/icons-vue | 中文语言包，表格 / 表单 / 弹窗 / 徽标 |
 | 构建 | Vite 6 | 产物 `dist/`，交给 nginx 托管 |
-| 状态管理 | Pinia 2（setup store） | `reefStore` / `beltStore` / `surveyStore` |
+| 状态管理 | Pinia 2（setup store） | `reefStore` / `beltStore` / `surveyStore` / `voyageStore` / `reviewStore` |
 | 路由 | Vue Router 4（history 模式） | 路径与提示词逐字一致，支持深链刷新 |
-| 持久化 | Dexie 4（IndexedDB，库名 `gbcoralbelt`） | 结构版本 v2 + upgrade 迁移 + liveQuery 订阅 |
+| 持久化 | Dexie 4（IndexedDB，库名 `gbcoralbelt`） | 结构版本 v3 + upgrade 迁移 + liveQuery 订阅 |
 | 容器 | node:20-alpine 构建 → nginx:alpine 运行 | 多阶段构建，运行阶段 `chmod -R a+rX` |
 
 ## 三、路由与功能模块
@@ -44,7 +46,9 @@ docker compose up -d --build      # 修改代码后重新构建
 | `/sites/:id/belts` | 样带布设 | Belt、Site、CoralRecord、FishCount | 布设样带（编号、长度、朝向、调查日期、调查人），回显已录记录数、覆盖率与白化指数，朝向排序校验 |
 | `/belts/:id/corals` | 底质与珊瑚分类计数 | CoralRecord、Belt | 按属名与形态逐条录入覆盖长度与白化等级，汇总覆盖率、白化指数、白化占比与等级分布，批量粘贴、批量改级 |
 | `/belts/:id/fishes` | 鱼类与无脊椎动物计数 | FishCount、Belt | 按科名与体长段录入数量，按类别筛选与批量改类别，按科名和体长段汇总并折算密度（尾/100 m²） |
-| `/coverage` | 白化等级评定与覆盖度汇总 | 全部模型 | 白化等级分布与按样带/按礁区汇总、结构版本查看、全量 JSON 导入导出、清空重建演示数据 |
+| `/coverage` | 白化等级评定与覆盖度汇总 | 全部模型 | 白化等级分布与按样带/按礁区汇总（仅审过的批次）、结构版本查看、全量 JSON 导入导出、清空重建演示数据 |
+| `/voyages` | 航次批次 | VoyageBatch、Belt、ReviewForm、ReviewItem | 普查队按航次批次管样带，新建/编辑/删除航次，回显样带数与审核状态，展开本航次样带 |
+| `/reviews` | 审核管理 | ReviewForm、ReviewItem、VoyageBatch、Belt | 院所审核组按航次出具审核单与驳回条目，按「航次号 + 样带编号」对账，核不上的批次挂起，写单失败只重试审核侧 |
 
 带 `:id` 的层级路由在直接深链访问时同样可用：若 IndexedDB 中查不到该 id，页面渲染 `<RouteMissingPanel>` 友好空态（含返回入口与可用 id 快捷跳转），不会白屏。
 
@@ -71,14 +75,14 @@ sologsb101-1013/
         ├── main.ts             # 挂载 Pinia / Router / Element Plus，并打开并播种数据库
         ├── App.vue             # 顶部导航 + 上下文快捷入口 + 页脚数据概览
         ├── env.d.ts
-        ├── types/              # reef / site / belt / coralRecord / fishCount / filter
-        ├── stores/             # reefStore / beltStore / surveyStore
+        ├── types/              # reef / site / belt / coralRecord / fishCount / voyage / review / filter
+        ├── stores/             # reefStore / beltStore / surveyStore / voyageStore / reviewStore
         ├── components/common/  # BleachTag / FilterBar / StatBadge / EmptyPanel / RouteMissingPanel
         ├── hooks/              # useIdbTable / useCoverage
-        ├── pages/              # ReefList / SiteList / BeltBoard / CoralEntry / FishEntry / CoverageView
+        ├── pages/              # ReefList / SiteList / BeltBoard / CoralEntry / FishEntry / CoverageView / VoyageList / ReviewBoard
         ├── router/index.ts     # 路由表（路径与提示词逐字一致）
         ├── styles/main.css
-        └── utils/              # bleach.ts（白化与覆盖度算法）/ db.ts（Dexie 封装）/ export.ts（导入导出与结论）
+        └── utils/              # bleach.ts（白化与覆盖度算法）/ db.ts（Dexie 封装）/ export.ts（导入导出与结论）/ review.ts（审核对账）
 ```
 
 ## 五、本地开发
@@ -93,11 +97,12 @@ npm run preview    # 预览构建产物
 
 ## 六、数据存储说明
 
-- **存储位置**：浏览器 IndexedDB，库名 `gbcoralbelt`，当前结构版本 `v2`。读写统一经 `frontend/src/utils/db.ts` 封装，页面组件不直接触碰 Dexie 实例。
-- **数据表**：`reefs`（礁区）、`sites`（站位）、`belts`（样带）、`corals`（珊瑚记录）、`fishes`（鱼类与无脊椎动物计数）。
-- **升级迁移**：`db.version(1)` 保留初版结构，`db.version(2).stores(...).upgrade(...)` 补齐索引并回填历史数据缺失的时间戳与必填字段（面积、经纬度、水深、样带长度、覆盖长度、计数等）；调整字段结构时递增 `DB_VERSION` 并补迁移。
-- **首屏播种**：`initDatabase()` 在 `reefs` 表为空时执行幂等播种，生成三层互相引用的演示数据（3 个礁区 / 4 个站位 / 5 条样带 / 14 条珊瑚记录 / 12 条计数记录），覆盖「无 / 轻 / 中 / 重 / 死亡」全部白化等级，保证每个页面打开都有内容、层级路由也能命中真实 id。
+- **存储位置**：浏览器 IndexedDB，库名 `gbcoralbelt`，当前结构版本 `v3`。读写统一经 `frontend/src/utils/db.ts` 封装，页面组件不直接触碰 Dexie 实例。
+- **数据表**：`reefs`（礁区）、`sites`（站位）、`belts`（样带）、`corals`（珊瑚记录）、`fishes`（鱼类与无脊椎动物计数）、`voyages`（航次批次）、`reviewForms`（审核单）、`reviewItems`（审核条目）。
+- **升级迁移**：`db.version(1)` 保留初版结构，`db.version(2)` 补齐索引并回填历史数据缺失的时间戳与必填字段，`db.version(3)` 新增航次批次与审核单/驳回条目表，并按调查日期为已有样带回填航次归属（同一天下水的样带归为同一航次，航次号 `V + YYYYMMDD`）；调整字段结构时递增 `DB_VERSION` 并补迁移。
+- **首屏播种**：`initDatabase()` 在 `reefs` 表为空时执行幂等播种，生成三层互相引用的演示数据（3 个礁区 / 4 个站位 / 5 条样带 / 14 条珊瑚记录 / 12 条计数记录 / 2 个航次 / 2 张审核单 / 6 条审核条目），覆盖「无 / 轻 / 中 / 重 / 死亡」全部白化等级，并演示「4 条通过、1 条驳回」与「1 个挂起航次」，保证每个页面打开都有内容、层级路由也能命中真实 id。
 - **实时同步**：`utils/db.ts` 的 `watchTable()` 基于 Dexie `liveQuery` 订阅表变化，Pinia store 自动刷新，页面只读消费。
+- **审核口径**：院所审核组按航次出具审核单，审核条目按「航次号 + 样带编号」与普查样带对账；核不上的批次先挂起。礁区覆盖率与白化指数只按审过的批次算——未送审、已挂起或被驳回的样带不计入结论，结论与导出共用同一口径。写审核单失败只重试审核侧（3 次退避），普查队录好的样带/珊瑚/鱼类不动。
 - **算法口径**：珊瑚覆盖率 = 覆盖长度合计 / 样带长度 × 100%；白化指数 = 按覆盖长度加权的平均白化等级（无 0 / 轻 1 / 中 2 / 重 3 / 死亡 4，0 ~ 4），并按指数换算总体等级；鱼类密度 = 计数 / （样带长度 × 1 m）× 100（尾/100 m²）。
-- **备份与恢复**：`/coverage` 页可导出包含五张表的 JSON 快照，支持「覆盖导入」与「追加导入（重新分配 id）」；备份时间写入 `localStorage`，页脚与汇总页均展示结构版本号。
+- **备份与恢复**：`/coverage` 页可导出包含八张表的 JSON 快照，支持「覆盖导入」与「追加导入（重新分配 id）」；备份时间写入 `localStorage`，页脚与汇总页均展示结构版本号。
 - **离线可用**：应用为纯静态资源，无任何网络请求；换浏览器或清空站点数据后数据不跟随，需通过 JSON 备份迁移。

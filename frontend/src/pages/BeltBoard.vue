@@ -15,8 +15,10 @@ import RouteMissingPanel from '@/components/common/RouteMissingPanel.vue'
 import { useReefStore } from '@/stores/reefStore'
 import { ORIENTATION_ORDER, useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
+import { useVoyageStore } from '@/stores/voyageStore'
 import { BELT_LENGTH_PRESETS, ORIENTATIONS } from '@/types/belt'
 import type { Belt, Orientation } from '@/types/belt'
+import { suggestVoyageNo } from '@/types/voyage'
 import { bleachGrade, bleachIndex, coralCoveragePct, fishDensity } from '@/utils/bleach'
 import { initDatabase } from '@/utils/db'
 
@@ -25,6 +27,7 @@ const router = useRouter()
 const reefStore = useReefStore()
 const beltStore = useBeltStore()
 const surveyStore = useSurveyStore()
+const voyageStore = useVoyageStore()
 
 const siteId = computed(() => String(route.params.id ?? ''))
 const site = computed(() => reefStore.siteById(siteId.value))
@@ -35,11 +38,18 @@ const editingId = ref<string | null>(null)
 const submitting = ref(false)
 const form = reactive({
   no: '',
+  voyageNo: '',
   lengthM: 50,
   orientation: '北' as Orientation,
   surveyDate: new Date().toISOString().slice(0, 10),
   observer: ''
 })
+
+/** 航次下拉选项（普查队已建立的航次批次） */
+const voyageOptions = computed(() => voyageStore.voyages.map((voyage) => voyage.voyageNo))
+
+/** 按调查日期建议的航次号 */
+const suggestedVoyageNo = computed(() => suggestVoyageNo(form.surveyDate))
 
 /** 样带行：回显珊瑚记录数、鱼类记录数、覆盖率与白化指数 */
 const rows = computed(() =>
@@ -91,6 +101,7 @@ function openCreate(): void {
   editingId.value = null
   const existing = beltStore.beltsOfSite(siteId.value)
   form.no = nextNo()
+  form.voyageNo = voyageStore.voyageBySurveyDate(form.surveyDate)?.voyageNo ?? suggestVoyageNo(form.surveyDate)
   form.lengthM = existing[0]?.lengthM ?? 50
   form.orientation = ORIENTATIONS[existing.length % ORIENTATIONS.length]
   form.surveyDate = new Date().toISOString().slice(0, 10)
@@ -101,6 +112,7 @@ function openCreate(): void {
 function openEdit(belt: Belt): void {
   editingId.value = belt.id
   form.no = belt.no
+  form.voyageNo = belt.voyageNo
   form.lengthM = belt.lengthM
   form.orientation = belt.orientation
   form.surveyDate = belt.surveyDate
@@ -132,11 +144,14 @@ async function submitForm(): Promise<void> {
   try {
     const payload = {
       no: form.no.trim(),
+      voyageNo: form.voyageNo.trim() || suggestVoyageNo(form.surveyDate),
       lengthM: form.lengthM,
       orientation: form.orientation,
       surveyDate: form.surveyDate,
       observer: form.observer.trim()
     }
+    // 确保航次批次存在（按航次号找，找不到则自动建）
+    await voyageStore.ensureVoyageForBelt(payload)
     if (editingId.value) {
       await beltStore.updateBelt(editingId.value, payload)
       ElMessage.success('样带已更新')
@@ -265,6 +280,11 @@ onMounted(() => {
 
       <el-table v-else :data="rows" border stripe class="gb-table-compact">
         <el-table-column prop="belt.no" label="样带编号" width="110" />
+        <el-table-column label="航次号" width="130">
+          <template #default="{ row }">
+            <span class="gb-mono">{{ row.belt.voyageNo || '—' }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="朝向" width="90" align="center">
           <template #default="{ row }">
             <el-tag size="small" effect="plain">{{ row.belt.orientation }}</el-tag>
@@ -325,6 +345,14 @@ onMounted(() => {
       <el-form label-width="104px">
         <el-form-item label="样带编号" required>
           <el-input v-model="form.no" placeholder="如：T-01" maxlength="24" />
+        </el-form-item>
+        <el-form-item label="所属航次" required>
+          <el-select v-model="form.voyageNo" placeholder="选择或输入航次号" filterable allow-create style="width: 100%">
+            <el-option v-for="voyage in voyageOptions" :key="voyage" :label="voyage" :value="voyage" />
+          </el-select>
+          <div class="gb-hint">
+            按调查日期归属，建议 {{ suggestedVoyageNo }}；找不到对应航次时会自动建立。可到「航次批次」页管理。
+          </div>
         </el-form-item>
         <el-form-item label="长度" required>
           <el-input-number v-model="form.lengthM" :min="1" :max="1000" :step="1" controls-position="right" />

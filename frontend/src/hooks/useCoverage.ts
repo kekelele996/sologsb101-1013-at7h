@@ -8,9 +8,11 @@ import { storeToRefs } from 'pinia'
 import { useReefStore } from '@/stores/reefStore'
 import { useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
+import { useReviewStore } from '@/stores/reviewStore'
 import type { BleachLevel, CoralRecord, CoralForm } from '@/types/coralRecord'
 import { BLEACH_LEVELS } from '@/types/coralRecord'
 import type { FishCount } from '@/types/fishCount'
+import { beltApproved } from '@/utils/review'
 import {
   bleachGrade,
   bleachIndex,
@@ -117,13 +119,20 @@ export function useCoverage(): UseCoverageResult {
   const reefStore = useReefStore()
   const beltStore = useBeltStore()
   const surveyStore = useSurveyStore()
+  const reviewStore = useReviewStore()
 
   const { reefs, sites } = storeToRefs(reefStore)
   const { belts } = storeToRefs(beltStore)
   const { corals, fishes } = storeToRefs(surveyStore)
+  const { reviewForms, reviewItems } = storeToRefs(reviewStore)
 
   const siteOf = (siteId: string) => sites.value.find((site) => site.id === siteId) ?? null
   const reefOf = (reefId: string) => reefs.value.find((reef) => reef.id === reefId) ?? null
+
+  /** 通过审核的样带（可计入结论） */
+  const approvedBelts = computed(() =>
+    belts.value.filter((belt) => beltApproved(belt, reviewForms.value, reviewItems.value, belts.value))
+  )
 
   function buildBeltCoverage(beltId: string): BeltCoverage | null {
     const belt = belts.value.find((item) => item.id === beltId)
@@ -179,7 +188,7 @@ export function useCoverage(): UseCoverageResult {
   }
 
   const allBeltCoverages = computed<BeltCoverage[]>(() =>
-    belts.value
+    approvedBelts.value
       .map((belt) => buildBeltCoverage(belt.id))
       .filter((item): item is BeltCoverage => item !== null)
       .sort((a, b) => b.bleachIndex - a.bleachIndex)
@@ -189,7 +198,7 @@ export function useCoverage(): UseCoverageResult {
     const site = siteOf(siteId)
     if (!site) return null
     const reef = reefOf(site.reefId)
-    const siteBelts = belts.value.filter((belt) => belt.siteId === site.id)
+    const siteBelts = approvedBelts.value.filter((belt) => belt.siteId === site.id)
     const beltIds = new Set(siteBelts.map((belt) => belt.id))
     const siteCorals = corals.value.filter((coral) => beltIds.has(coral.beltId))
     const siteFishes = fishes.value.filter((fish) => beltIds.has(fish.beltId))
@@ -244,9 +253,11 @@ export function useCoverage(): UseCoverageResult {
 
   const globalDistribution = computed<Record<BleachLevel, number>>(() => {
     const distribution = EMPTY_DISTRIBUTION()
+    const approvedBeltIds = new Set(approvedBelts.value.map((belt) => belt.id))
+    const approvedCorals = corals.value.filter((coral) => approvedBeltIds.has(coral.beltId))
     BLEACH_LEVELS.forEach((level) => {
       distribution[level] = round(
-        corals.value.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
+        approvedCorals.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
         1
       )
     })

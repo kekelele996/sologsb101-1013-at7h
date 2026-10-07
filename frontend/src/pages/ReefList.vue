@@ -40,12 +40,12 @@ const form = reactive({
   manager: ''
 })
 
-/** 礁区卡片：汇总站位/样带/珊瑚记录数与平均白化指数 */
+/** 礁区卡片：汇总站位/样带/珊瑚记录数与平均白化指数（仅通过审核的样带） */
 const cards = computed(() =>
   reefStore.filteredReefs.map((reef: Reef) => {
     const sites = reefStore.sites.filter((site) => site.reefId === reef.id)
     const siteIds = new Set(sites.map((site) => site.id))
-    const belts = beltStore.belts.filter((belt) => siteIds.has(belt.siteId))
+    const belts = surveyStore.approvedBelts.filter((belt) => siteIds.has(belt.siteId))
     const beltIds = new Set(belts.map((belt) => belt.id))
     const corals = surveyStore.corals.filter((coral) => beltIds.has(coral.beltId))
     const fishes = surveyStore.fishes.filter((fish) => beltIds.has(fish.beltId))

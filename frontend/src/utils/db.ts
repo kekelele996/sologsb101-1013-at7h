@@ -11,9 +11,11 @@ import type { Site } from '@/types/site'
 import type { Belt } from '@/types/belt'
 import type { CoralRecord } from '@/types/coralRecord'
 import type { FishCount } from '@/types/fishCount'
+import type { VoyageBatch } from '@/types/voyage'
+import type { ReviewForm, ReviewItem } from '@/types/review'
 
 /** 当前数据结构版本号：每次调整字段结构必须 +1 并补迁移 */
-export const DB_VERSION = 2
+export const DB_VERSION = 3
 
 /** 数据库名（浏览器 IndexedDB 中的库名） */
 export const DB_NAME = 'gbcoralbelt'
@@ -35,6 +37,9 @@ export interface BackupPayload {
   belts: Belt[]
   corals: CoralRecord[]
   fishes: FishCount[]
+  voyages: VoyageBatch[]
+  reviewForms: ReviewForm[]
+  reviewItems: ReviewItem[]
 }
 
 export class CoralBeltDatabase extends Dexie {
@@ -43,6 +48,9 @@ export class CoralBeltDatabase extends Dexie {
   belts!: Table<Belt, string>
   corals!: Table<CoralRecord, string>
   fishes!: Table<FishCount, string>
+  voyages!: Table<VoyageBatch, string>
+  reviewForms!: Table<ReviewForm, string>
+  reviewItems!: Table<ReviewItem, string>
 
   constructor() {
     super(DB_NAME)
@@ -57,13 +65,25 @@ export class CoralBeltDatabase extends Dexie {
     })
 
     // v2：补齐筛选与统计需要的索引（位置/面积、经纬度/水深、样带长度与朝向、白化等级、类别）
+    this.version(2).stores({
+      reefs: 'id, name, location, protectStatus, areaKm2, manager, updatedAt',
+      sites: 'id, reefId, no, lat, lng, depthM, substrate, updatedAt',
+      belts: 'id, siteId, no, lengthM, orientation, surveyDate, observer, updatedAt',
+      corals: 'id, beltId, genus, form, coverCm, bleachLevel, updatedAt',
+      fishes: 'id, beltId, family, count, sizeClass, category, updatedAt'
+    })
+
+    // v3：航次批次与审核单/驳回条目；样带补 voyageNo 归属
     this.version(DB_VERSION)
       .stores({
         reefs: 'id, name, location, protectStatus, areaKm2, manager, updatedAt',
         sites: 'id, reefId, no, lat, lng, depthM, substrate, updatedAt',
-        belts: 'id, siteId, no, lengthM, orientation, surveyDate, observer, updatedAt',
+        belts: 'id, siteId, voyageNo, no, lengthM, orientation, surveyDate, observer, updatedAt',
         corals: 'id, beltId, genus, form, coverCm, bleachLevel, updatedAt',
-        fishes: 'id, beltId, family, count, sizeClass, category, updatedAt'
+        fishes: 'id, beltId, family, count, sizeClass, category, updatedAt',
+        voyages: 'id, voyageNo, surveyDate, team, updatedAt',
+        reviewForms: 'id, voyageNo, reviewer, reviewedAt, updatedAt',
+        reviewItems: 'id, reviewFormId, voyageNo, beltNo, verdict, updatedAt'
       })
       .upgrade(async (tx) => {
         // 迁移：历史数据补齐时间戳与必填字段，避免列表排序与筛选拿到 undefined
@@ -85,6 +105,32 @@ export class CoralBeltDatabase extends Dexie {
               Object.assign(row, factory())
             })
         }
+
+        // 迁移：已有样带按调查日期补航次归属（同一天下水的样带归为同一航次）
+        const belts = (await tx.table('belts').toArray()) as Belt[]
+        const voyageByDate = new Map<string, string>()
+        const newVoyages: VoyageBatch[] = []
+        for (const belt of belts) {
+          if (typeof belt.voyageNo === 'string' && belt.voyageNo.length > 0) continue
+          const date = typeof belt.surveyDate === 'string' ? belt.surveyDate : new Date().toISOString().slice(0, 10)
+          let voyageNo = voyageByDate.get(date)
+          if (!voyageNo) {
+            voyageNo = `V${date.replace(/-/g, '')}`
+            voyageByDate.set(date, voyageNo)
+            newVoyages.push({
+              id: `voy_backfill_${newVoyages.length}`,
+              voyageNo,
+              surveyDate: date,
+              team: '',
+              note: '升级时按调查日期补齐',
+              createdAt: Date.now() + newVoyages.length,
+              updatedAt: Date.now() + newVoyages.length
+            })
+          }
+          belt.voyageNo = voyageNo
+        }
+        if (belts.length > 0) await tx.table('belts').bulkPut(belts)
+        if (newVoyages.length > 0) await tx.table('voyages').bulkPut(newVoyages)
       })
   }
 }
@@ -135,6 +181,7 @@ interface SeedFish {
 interface SeedBelt {
   id: string
   siteId: string
+  voyageNo: string
   no: string
   lengthM: number
   orientation: Belt['orientation']
@@ -222,6 +269,7 @@ export async function seedDemoData(): Promise<void> {
     {
       id: 'belt_ql01_a',
       siteId: 'site_ql_01',
+      voyageNo: `V${today.replace(/-/g, '')}`,
       no: 'T-01',
       lengthM: 50,
       orientation: '北',
@@ -243,6 +291,7 @@ export async function seedDemoData(): Promise<void> {
     {
       id: 'belt_ql01_b',
       siteId: 'site_ql_01',
+      voyageNo: `V${today.replace(/-/g, '')}`,
       no: 'T-02',
       lengthM: 50,
       orientation: '东',
@@ -262,7 +311,8 @@ export async function seedDemoData(): Promise<void> {
     {
       id: 'belt_ql02_a',
       siteId: 'site_ql_02',
-      no: 'T-01',
+      voyageNo: `V${today.replace(/-/g, '')}`,
+      no: 'T-03',
       lengthM: 30,
       orientation: '南',
       surveyDate: today,
@@ -279,7 +329,8 @@ export async function seedDemoData(): Promise<void> {
     {
       id: 'belt_yr01_a',
       siteId: 'site_yr_01',
-      no: 'T-01',
+      voyageNo: `V${today.replace(/-/g, '')}`,
+      no: 'T-04',
       lengthM: 100,
       orientation: '西',
       surveyDate: today,
@@ -298,7 +349,8 @@ export async function seedDemoData(): Promise<void> {
     {
       id: 'belt_dz01_a',
       siteId: 'site_dz_01',
-      no: 'T-01',
+      voyageNo: `V${today.replace(/-/g, '')}`,
+      no: 'T-05',
       lengthM: 25,
       orientation: '东',
       surveyDate: today,
@@ -314,33 +366,110 @@ export async function seedDemoData(): Promise<void> {
     }
   ]
 
-  await db.transaction('rw', [db.reefs, db.sites, db.belts, db.corals, db.fishes], async () => {
-    const stamp = (offset: number): { createdAt: number; updatedAt: number } => ({
-      createdAt: now + offset,
-      updatedAt: now + offset
-    })
+  const todayVoyageNo = `V${today.replace(/-/g, '')}`
+  const yesterday = new Date(now - 86400000).toISOString().slice(0, 10)
+  const yesterdayVoyageNo = `V${yesterday.replace(/-/g, '')}`
 
-    await db.reefs.bulkPut(reefs.map((reef, index) => ({ ...reef, ...stamp(index) })))
-    await db.sites.bulkPut(sites.map((site, index) => ({ ...site, ...stamp(100 + index) })))
-    await db.belts.bulkPut(
-      belts.map((belt, index) => {
-        const { corals, fishes, ...rest } = belt
-        void corals
-        void fishes
-        return { ...rest, ...stamp(200 + index) }
-      })
-    )
-    await db.corals.bulkPut(
-      belts.flatMap((belt, beltIndex) =>
-        belt.corals.map((coral, coralIndex) => ({ ...coral, ...stamp(300 + beltIndex * 100 + coralIndex) }))
-      )
-    )
-    await db.fishes.bulkPut(
-      belts.flatMap((belt, beltIndex) =>
-        belt.fishes.map((fish, fishIndex) => ({ ...fish, ...stamp(400 + beltIndex * 100 + fishIndex) }))
-      )
-    )
+  const voyages: VoyageBatch[] = [
+    {
+      id: 'voy_today',
+      voyageNo: todayVoyageNo,
+      surveyDate: today,
+      team: '南海普查队',
+      note: '首航，覆盖清澜湾 / 永兴岛 / 大洲岛',
+      createdAt: now + 500,
+      updatedAt: now + 500
+    },
+    {
+      id: 'voy_yesterday',
+      voyageNo: yesterdayVoyageNo,
+      surveyDate: yesterday,
+      team: '南海普查队',
+      note: '',
+      createdAt: now + 501,
+      updatedAt: now + 501
+    }
+  ]
+
+  const reviewForms: ReviewForm[] = [
+    {
+      id: 'rev_today',
+      voyageNo: todayVoyageNo,
+      reviewer: '院所审核组',
+      reviewedAt: today,
+      note: '常规审核，退回大洲岛南岸 T-05',
+      createdAt: now + 510,
+      updatedAt: now + 510
+    },
+    {
+      id: 'rev_yesterday',
+      voyageNo: yesterdayVoyageNo,
+      reviewer: '院所审核组',
+      reviewedAt: yesterday,
+      note: '',
+      createdAt: now + 511,
+      updatedAt: now + 511
+    }
+  ]
+
+  // 今日航次：4 条通过，大洲岛南岸 T-01 驳回（只退这几条）
+  const rejectedBelts = new Set(['belt_dz01_a'])
+  const reviewItems: ReviewItem[] = belts.map((belt, index) => ({
+    id: `rit_today_${index}`,
+    reviewFormId: 'rev_today',
+    voyageNo: todayVoyageNo,
+    beltNo: belt.no,
+    verdict: rejectedBelts.has(belt.id) ? '驳回' : '通过',
+    reason: rejectedBelts.has(belt.id) ? '受台风扰动后白化明显，退回重测' : '',
+    createdAt: now + 520 + index,
+    updatedAt: now + 520 + index
+  }))
+  // 昨日航次：审核单引用了普查侧不存在的样带 T-99 → 挂起
+  reviewItems.push({
+    id: 'rit_yesterday_0',
+    reviewFormId: 'rev_yesterday',
+    voyageNo: yesterdayVoyageNo,
+    beltNo: 'T-99',
+    verdict: '通过',
+    reason: '',
+    createdAt: now + 530,
+    updatedAt: now + 530
   })
+
+  await db.transaction(
+    'rw',
+    [db.reefs, db.sites, db.belts, db.corals, db.fishes, db.voyages, db.reviewForms, db.reviewItems],
+    async () => {
+      const stamp = (offset: number): { createdAt: number; updatedAt: number } => ({
+        createdAt: now + offset,
+        updatedAt: now + offset
+      })
+
+      await db.reefs.bulkPut(reefs.map((reef, index) => ({ ...reef, ...stamp(index) })))
+      await db.sites.bulkPut(sites.map((site, index) => ({ ...site, ...stamp(100 + index) })))
+      await db.belts.bulkPut(
+        belts.map((belt, index) => {
+          const { corals, fishes, ...rest } = belt
+          void corals
+          void fishes
+          return { ...rest, ...stamp(200 + index) }
+        })
+      )
+      await db.corals.bulkPut(
+        belts.flatMap((belt, beltIndex) =>
+          belt.corals.map((coral, coralIndex) => ({ ...coral, ...stamp(300 + beltIndex * 100 + coralIndex) }))
+        )
+      )
+      await db.fishes.bulkPut(
+        belts.flatMap((belt, beltIndex) =>
+          belt.fishes.map((fish, fishIndex) => ({ ...fish, ...stamp(400 + beltIndex * 100 + fishIndex) }))
+        )
+      )
+      await db.voyages.bulkPut(voyages)
+      await db.reviewForms.bulkPut(reviewForms)
+      await db.reviewItems.bulkPut(reviewItems)
+    }
+  )
 }
 
 /** 打开数据库并幂等播种：仅当礁区表为空时灌入演示数据 */
@@ -355,9 +484,22 @@ export async function initDatabase(): Promise<void> {
 
 /** 清空全部业务表（导入覆盖与重置共用） */
 export async function clearAllTables(): Promise<void> {
-  await db.transaction('rw', [db.reefs, db.sites, db.belts, db.corals, db.fishes], async () => {
-    await Promise.all([db.reefs.clear(), db.sites.clear(), db.belts.clear(), db.corals.clear(), db.fishes.clear()])
-  })
+  await db.transaction(
+    'rw',
+    [db.reefs, db.sites, db.belts, db.corals, db.fishes, db.voyages, db.reviewForms, db.reviewItems],
+    async () => {
+      await Promise.all([
+        db.reefs.clear(),
+        db.sites.clear(),
+        db.belts.clear(),
+        db.corals.clear(),
+        db.fishes.clear(),
+        db.voyages.clear(),
+        db.reviewForms.clear(),
+        db.reviewItems.clear()
+      ])
+    }
+  )
 }
 
 /** 清空并重新播种演示数据 */
@@ -368,14 +510,17 @@ export async function resetDatabase(): Promise<void> {
 
 /** 统计各表行数，供页脚概览与覆盖度页展示 */
 export async function countAll(): Promise<Record<string, number>> {
-  const [reefs, sites, belts, corals, fishes] = await Promise.all([
+  const [reefs, sites, belts, corals, fishes, voyages, reviewForms, reviewItems] = await Promise.all([
     db.reefs.count(),
     db.sites.count(),
     db.belts.count(),
     db.corals.count(),
-    db.fishes.count()
+    db.fishes.count(),
+    db.voyages.count(),
+    db.reviewForms.count(),
+    db.reviewItems.count()
   ])
-  return { reefs, sites, belts, corals, fishes }
+  return { reefs, sites, belts, corals, fishes, voyages, reviewForms, reviewItems }
 }
 
 /** 写入结构版本号到 localStorage，便于覆盖度页比对 */

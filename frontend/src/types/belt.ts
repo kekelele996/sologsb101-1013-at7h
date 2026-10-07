@@ -8,6 +8,8 @@ export interface Belt {
   id: string
   /** 所属站位 */
   siteId: string
+  /** 所属航次批次（按调查日期归属，升级时回填） */
+  voyageNo: string
   /** 样带编号，如 T-01 */
   no: string
   /** 样带长度（m） */
@@ -25,15 +27,17 @@ export interface Belt {
 /** 样带布设草稿（存于 beltStore） */
 export interface BeltDraft {
   no: string
+  voyageNo: string
   lengthM: number
   orientation: Orientation
   surveyDate: string
   observer: string
 }
 
-export function createEmptyBeltDraft(no = ''): BeltDraft {
+export function createEmptyBeltDraft(no = '', voyageNo = ''): BeltDraft {
   return {
     no,
+    voyageNo,
     lengthM: 50,
     orientation: '北',
     surveyDate: new Date().toISOString().slice(0, 10),

@@ -43,6 +43,18 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/pages/CoverageView.vue'),
     meta: { title: '白化等级评定与覆盖度汇总', icon: 'PieChart' }
   },
+  {
+    path: '/voyages',
+    name: 'voyage-list',
+    component: () => import('@/pages/VoyageList.vue'),
+    meta: { title: '航次批次', icon: 'Files' }
+  },
+  {
+    path: '/reviews',
+    name: 'review-board',
+    component: () => import('@/pages/ReviewBoard.vue'),
+    meta: { title: '审核管理', icon: 'CircleCheck' }
+  },
   { path: '/:pathMatch(.*)*', redirect: '/reefs' }
 ]
 

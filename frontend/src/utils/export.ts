@@ -16,21 +16,34 @@ import {
   type BleachLevel
 } from '@/types/coralRecord'
 import { bleachGrade, bleachIndex, bleachedSharePct, coralCoveragePct, fishDensity, round } from '@/utils/bleach'
+import { beltApproved } from '@/utils/review'
 
 /** 备份集合键名 */
-export const BACKUP_KEYS = ['reefs', 'sites', 'belts', 'corals', 'fishes'] as const
+export const BACKUP_KEYS = [
+  'reefs',
+  'sites',
+  'belts',
+  'corals',
+  'fishes',
+  'voyages',
+  'reviewForms',
+  'reviewItems'
+] as const
 export type BackupKey = (typeof BACKUP_KEYS)[number]
 
 export type CountMap = Record<BackupKey, number>
 
 /** 组装当前本地数据的完整快照 */
 export async function buildBackupPayload(): Promise<BackupPayload> {
-  const [reefs, sites, belts, corals, fishes] = await Promise.all([
+  const [reefs, sites, belts, corals, fishes, voyages, reviewForms, reviewItems] = await Promise.all([
     db.reefs.toArray(),
     db.sites.toArray(),
     db.belts.toArray(),
     db.corals.toArray(),
-    db.fishes.toArray()
+    db.fishes.toArray(),
+    db.voyages.toArray(),
+    db.reviewForms.toArray(),
+    db.reviewItems.toArray()
   ])
   return {
     app: 'gbcoralbelt',
@@ -40,7 +53,10 @@ export async function buildBackupPayload(): Promise<BackupPayload> {
     sites,
     belts,
     corals,
-    fishes
+    fishes,
+    voyages,
+    reviewForms,
+    reviewItems
   }
 }
 
@@ -66,7 +82,10 @@ export function validateBackup(input: unknown): { ok: boolean; errors: string[];
     sites: obj.sites ?? [],
     belts: obj.belts ?? [],
     corals: obj.corals ?? [],
-    fishes: obj.fishes ?? []
+    fishes: obj.fishes ?? [],
+    voyages: obj.voyages ?? [],
+    reviewForms: obj.reviewForms ?? [],
+    reviewItems: obj.reviewItems ?? []
   }
   return { ok: true, errors, payload }
 }
@@ -78,7 +97,10 @@ export function countPayload(payload: BackupPayload): CountMap {
     sites: payload.sites.length,
     belts: payload.belts.length,
     corals: payload.corals.length,
-    fishes: payload.fishes.length
+    fishes: payload.fishes.length,
+    voyages: payload.voyages.length,
+    reviewForms: payload.reviewForms.length,
+    reviewItems: payload.reviewItems.length
   }
 }
 
@@ -114,13 +136,20 @@ export function readFileText(file: File): Promise<string> {
 /** 导入快照：overwrite=true 先清空全部表，否则按主键合并 */
 export async function importBackup(payload: BackupPayload, overwrite: boolean): Promise<CountMap> {
   if (overwrite) await clearAllTables()
-  await db.transaction('rw', [db.reefs, db.sites, db.belts, db.corals, db.fishes], async () => {
-    await db.reefs.bulkPut(payload.reefs)
-    await db.sites.bulkPut(payload.sites)
-    await db.belts.bulkPut(payload.belts)
-    await db.corals.bulkPut(payload.corals)
-    await db.fishes.bulkPut(payload.fishes)
-  })
+  await db.transaction(
+    'rw',
+    [db.reefs, db.sites, db.belts, db.corals, db.fishes, db.voyages, db.reviewForms, db.reviewItems],
+    async () => {
+      await db.reefs.bulkPut(payload.reefs)
+      await db.sites.bulkPut(payload.sites)
+      await db.belts.bulkPut(payload.belts)
+      await db.corals.bulkPut(payload.corals)
+      await db.fishes.bulkPut(payload.fishes)
+      await db.voyages.bulkPut(payload.voyages)
+      await db.reviewForms.bulkPut(payload.reviewForms)
+      await db.reviewItems.bulkPut(payload.reviewItems)
+    }
+  )
   return countPayload(payload)
 }
 
@@ -129,6 +158,8 @@ export function remapIds(payload: BackupPayload): BackupPayload {
   const reefMap = new Map<string, string>()
   const siteMap = new Map<string, string>()
   const beltMap = new Map<string, string>()
+  const voyageMap = new Map<string, string>()
+  const reviewFormMap = new Map<string, string>()
 
   const reefs = payload.reefs.map((reef) => {
     const id = createId('reef')
@@ -155,7 +186,22 @@ export function remapIds(payload: BackupPayload): BackupPayload {
     id: createId('fsh'),
     beltId: beltMap.get(fish.beltId) ?? fish.beltId
   }))
-  return { ...payload, reefs, sites, belts, corals, fishes }
+  const voyages = payload.voyages.map((voyage) => {
+    const id = createId('voy')
+    voyageMap.set(voyage.id, id)
+    return { ...voyage, id }
+  })
+  const reviewForms = payload.reviewForms.map((form) => {
+    const id = createId('rev')
+    reviewFormMap.set(form.id, id)
+    return { ...form, id }
+  })
+  const reviewItems = payload.reviewItems.map((item) => ({
+    ...item,
+    id: createId('rit'),
+    reviewFormId: reviewFormMap.get(item.reviewFormId) ?? item.reviewFormId
+  }))
+  return { ...payload, reefs, sites, belts, corals, fishes, voyages, reviewForms, reviewItems }
 }
 
 /** 白化等级分布：各等级累计覆盖长度 */
@@ -191,7 +237,7 @@ export interface CoverageLine {
   conclusion: string
 }
 
-/** 按样带生成覆盖度结论行 */
+/** 按样带生成覆盖度结论行（只计入通过审核的样带） */
 export function buildCoverageLines(payload: BackupPayload): CoverageLine[] {
   const reefById = new Map(payload.reefs.map((reef) => [reef.id, reef]))
   const siteById = new Map(payload.sites.map((site) => [site.id, site]))
@@ -208,7 +254,12 @@ export function buildCoverageLines(payload: BackupPayload): CoverageLine[] {
     fishesByBelt.set(fish.beltId, list)
   })
 
-  return payload.belts
+  // 只计入通过审核的样带：未送审 / 已挂起 / 被驳回的样带不进结论
+  const approvedBelts = payload.belts.filter((belt) =>
+    beltApproved(belt, payload.reviewForms, payload.reviewItems, payload.belts)
+  )
+
+  return approvedBelts
     .map((belt) => {
       const site = siteById.get(belt.siteId)
       const reef = site ? reefById.get(site.reefId) : undefined
@@ -278,9 +329,13 @@ export interface ReefSummary {
 }
 
 export function buildReefSummaries(payload: BackupPayload, lines: CoverageLine[]): ReefSummary[] {
+  // 只计入通过审核的样带
+  const approvedBelts = payload.belts.filter((belt) =>
+    beltApproved(belt, payload.reviewForms, payload.reviewItems, payload.belts)
+  )
   return payload.reefs.map((reef) => {
     const siteIds = new Set(payload.sites.filter((site) => site.reefId === reef.id).map((site) => site.id))
-    const beltIds = new Set(payload.belts.filter((belt) => siteIds.has(belt.siteId)).map((belt) => belt.id))
+    const beltIds = new Set(approvedBelts.filter((belt) => siteIds.has(belt.siteId)).map((belt) => belt.id))
     const corals = payload.corals.filter((coral) => beltIds.has(coral.beltId))
     const lines4Reef = lines.filter((line) => line.reefId === reef.id)
     const avgBleachIndex =

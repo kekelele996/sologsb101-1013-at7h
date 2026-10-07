@@ -11,6 +11,8 @@ import type { CountCategory, FishCount, SizeClass } from '@/types/fishCount'
 import type { Reef } from '@/types/reef'
 import type { Site } from '@/types/site'
 import type { Belt } from '@/types/belt'
+import type { ReviewForm, ReviewItem } from '@/types/review'
+import { beltApproved } from '@/utils/review'
 import { bleachGrade, bleachIndex, bleachedSharePct, coralCoveragePct, fishDensity, round } from '@/utils/bleach'
 
 /** 覆盖度汇总页筛选条件 */
@@ -61,6 +63,8 @@ export const useSurveyStore = defineStore('survey', () => {
   const reefs = ref<Reef[]>([])
   const sites = ref<Site[]>([])
   const belts = ref<Belt[]>([])
+  const reviewForms = ref<ReviewForm[]>([])
+  const reviewItems = ref<ReviewItem[]>([])
   const ready = ref(false)
   const error = ref<string | null>(null)
   const filter = ref<SurveyFilterState>(createEmptySurveyFilter())
@@ -102,6 +106,12 @@ export const useSurveyStore = defineStore('survey', () => {
     watchTable<Belt>(() => db.belts).subscribe((rows) => {
       belts.value = rows
     })
+    watchTable<ReviewForm>(() => db.reviewForms).subscribe((rows) => {
+      reviewForms.value = rows
+    })
+    watchTable<ReviewItem>(() => db.reviewItems).subscribe((rows) => {
+      reviewItems.value = rows
+    })
   }
 
   /** 某样带的珊瑚记录（按白化等级降序、覆盖长度降序） */
@@ -137,9 +147,19 @@ export const useSurveyStore = defineStore('survey', () => {
     return counts
   })
 
-  /** 覆盖度汇总行（全部样带） */
+  /** 通过审核的样带（可计入结论）：未送审 / 已挂起 / 被驳回的样带不计入 */
+  const approvedBelts = computed<Belt[]>(() =>
+    belts.value.filter((belt) => beltApproved(belt, reviewForms.value, reviewItems.value, belts.value))
+  )
+
+  /** 样带是否通过审核（页面回显用） */
+  function isBeltApproved(belt: Belt): boolean {
+    return beltApproved(belt, reviewForms.value, reviewItems.value, belts.value)
+  }
+
+  /** 覆盖度汇总行（仅通过审核的样带） */
   const coverageRows = computed<CoverageSummaryRow[]>(() =>
-    belts.value
+    approvedBelts.value
       .map((belt) => {
         const site = sites.value.find((item) => item.id === belt.siteId)
         const reef = site ? reefs.value.find((item) => item.id === site.reefId) : undefined
@@ -212,26 +232,29 @@ export const useSurveyStore = defineStore('survey', () => {
       filter.value.onlyBleached
   )
 
-  /** 全局白化等级分布与总体指数 */
+  /** 全局白化等级分布与总体指数（仅通过审核的样带） */
   const globalStats = computed(() => {
+    const approvedBeltIds = new Set(approvedBelts.value.map((belt) => belt.id))
+    const approvedCorals = corals.value.filter((coral) => approvedBeltIds.has(coral.beltId))
+    const approvedFishes = fishes.value.filter((fish) => approvedBeltIds.has(fish.beltId))
     const distribution: Record<BleachLevel, number> = { 无: 0, 轻: 0, 中: 0, 重: 0, 死亡: 0 }
     BLEACH_LEVELS.forEach((level) => {
       distribution[level] = round(
-        corals.value.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
+        approvedCorals.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
         1
       )
     })
-    const index = bleachIndex(corals.value)
+    const index = bleachIndex(approvedCorals)
     return {
-      coralCount: corals.value.length,
-      fishCount: fishes.value.length,
+      coralCount: approvedCorals.length,
+      fishCount: approvedFishes.length,
       coverCmTotal: round(
-        corals.value.reduce((sum, coral) => sum + coral.coverCm, 0),
+        approvedCorals.reduce((sum, coral) => sum + coral.coverCm, 0),
         1
       ),
       bleachIndex: index,
       grade: bleachGrade(index),
-      bleachedSharePct: bleachedSharePct(corals.value),
+      bleachedSharePct: bleachedSharePct(approvedCorals),
       distribution
     }
   })
@@ -378,12 +401,16 @@ export const useSurveyStore = defineStore('survey', () => {
     reefs,
     sites,
     belts,
+    reviewForms,
+    reviewItems,
     ready,
     error,
     filter,
     coralDraft,
     fishDraft,
     beltRecordCounts,
+    approvedBelts,
+    isBeltApproved,
     coverageRows,
     filteredCoverageRows,
     hasFilter,
