@@ -15,16 +15,27 @@ import RouteMissingPanel from '@/components/common/RouteMissingPanel.vue'
 import { useReefStore } from '@/stores/reefStore'
 import { ORIENTATION_ORDER, useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
+import { useVoyageStore } from '@/stores/voyageStore'
+import { useReviewStore } from '@/stores/reviewStore'
 import { BELT_LENGTH_PRESETS, ORIENTATIONS } from '@/types/belt'
 import type { Belt, Orientation } from '@/types/belt'
+import { VOYAGE_STATUS_META } from '@/types/voyage'
+import type { VoyageStatus } from '@/types/voyage'
 import { bleachGrade, bleachIndex, coralCoveragePct, fishDensity } from '@/utils/bleach'
 import { initDatabase } from '@/utils/db'
+
+/** 模板里 el-table 的 row 为 any，经此函数取回类型化的状态展示元数据 */
+function voyageMeta(status: VoyageStatus): { label: string; tagType: 'info' | 'primary' | 'warning' | 'success' | 'danger' } {
+  return VOYAGE_STATUS_META[status]
+}
 
 const route = useRoute()
 const router = useRouter()
 const reefStore = useReefStore()
 const beltStore = useBeltStore()
 const surveyStore = useSurveyStore()
+const voyageStore = useVoyageStore()
+const reviewStore = useReviewStore()
 
 const siteId = computed(() => String(route.params.id ?? ''))
 const site = computed(() => reefStore.siteById(siteId.value))
@@ -38,10 +49,11 @@ const form = reactive({
   lengthM: 50,
   orientation: '北' as Orientation,
   surveyDate: new Date().toISOString().slice(0, 10),
-  observer: ''
+  observer: '',
+  voyageId: ''
 })
 
-/** 样带行：回显珊瑚记录数、鱼类记录数、覆盖率与白化指数 */
+/** 样带行：回显珊瑚记录数、鱼类记录数、覆盖率与白化指数；附所属航次与结论口径 */
 const rows = computed(() =>
   beltStore.beltsOfSite(siteId.value).map((belt) => {
     const corals = surveyStore.coralsOfBelt(belt.id)
@@ -51,6 +63,9 @@ const rows = computed(() =>
     const fishTotal = fishes.filter((fish) => fish.category === '鱼类').reduce((sum, fish) => sum + fish.count, 0)
     return {
       belt,
+      voyage: voyageStore.voyageById(belt.voyageId),
+      suspended: reviewStore.scope.suspendedVoyageIds.has(belt.voyageId),
+      counted: reviewStore.scope.approvedBeltIds.has(belt.id),
       coralCount: corals.length,
       fishCount: fishes.length,
       coverCmTotal,
@@ -87,7 +102,25 @@ function nextNo(): string {
   return `T-${String(next).padStart(2, '0')}`
 }
 
+/** 样带归属下拉：录入中的航次优先，已提交 / 已审定的也列出（改动归属会触发重新对账） */
+const voyageOptions = computed(() =>
+  voyageStore.sortedVoyages.map((voyage) => ({
+    value: voyage.id,
+    label: `${voyage.voyageNo} · ${voyage.title}（${VOYAGE_STATUS_META[voyage.status].label}）`,
+    status: voyage.status
+  }))
+)
+
+function defaultVoyageId(): string {
+  return voyageStore.openVoyages[0]?.id ?? voyageStore.sortedVoyages[0]?.id ?? ''
+}
+
 function openCreate(): void {
+  if (voyageStore.voyages.length === 0) {
+    ElMessage.warning('还没有航次批次，请先到「航次批次」页新建航次，再把样带归批')
+    void router.push('/voyages')
+    return
+  }
   editingId.value = null
   const existing = beltStore.beltsOfSite(siteId.value)
   form.no = nextNo()
@@ -95,6 +128,7 @@ function openCreate(): void {
   form.orientation = ORIENTATIONS[existing.length % ORIENTATIONS.length]
   form.surveyDate = new Date().toISOString().slice(0, 10)
   form.observer = existing[0]?.observer ?? ''
+  form.voyageId = defaultVoyageId()
   dialogVisible.value = true
 }
 
@@ -105,6 +139,7 @@ function openEdit(belt: Belt): void {
   form.orientation = belt.orientation
   form.surveyDate = belt.surveyDate
   form.observer = belt.observer
+  form.voyageId = belt.voyageId
   dialogVisible.value = true
 }
 
@@ -121,6 +156,10 @@ async function submitForm(): Promise<void> {
     ElMessage.warning('请选择调查日期')
     return
   }
+  if (!form.voyageId) {
+    ElMessage.warning('请选择所属航次批次（样带按航次归批送审）')
+    return
+  }
   const duplicated = beltStore
     .beltsOfSite(siteId.value)
     .some((belt) => belt.no === form.no.trim() && belt.orientation === form.orientation && belt.id !== editingId.value)
@@ -135,7 +174,8 @@ async function submitForm(): Promise<void> {
       lengthM: form.lengthM,
       orientation: form.orientation,
       surveyDate: form.surveyDate,
-      observer: form.observer.trim()
+      observer: form.observer.trim(),
+      voyageId: form.voyageId
     }
     if (editingId.value) {
       await beltStore.updateBelt(editingId.value, payload)
@@ -281,6 +321,24 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column prop="belt.observer" label="调查人" width="110" />
+        <el-table-column label="航次批次" min-width="170">
+          <template #default="{ row }">
+            <template v-if="row.voyage">
+              <div class="gb-mono">{{ row.voyage.voyageNo }}</div>
+              <el-tag size="small" :type="voyageMeta(row.voyage.status).tagType" effect="plain">
+                {{ voyageMeta(row.voyage.status).label }}
+              </el-tag>
+              <el-tag v-if="row.suspended" size="small" type="danger" effect="dark">挂起</el-tag>
+            </template>
+            <span v-else class="gb-hint">未归批</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="计入结论" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.counted" size="small" type="success" effect="plain">已计入</el-tag>
+            <span v-else class="gb-hint">未计入</span>
+          </template>
+        </el-table-column>
         <el-table-column label="珊瑚记录" width="120" align="center">
           <template #default="{ row }">
             <el-button text type="primary" size="small" @click="gotoCorals(row.belt)">
@@ -350,6 +408,12 @@ onMounted(() => {
         <el-form-item label="调查日期" required>
           <el-date-picker v-model="form.surveyDate" type="date" value-format="YYYY-MM-DD" placeholder="选择调查日期" />
         </el-form-item>
+        <el-form-item label="所属航次" required>
+          <el-select v-model="form.voyageId" placeholder="选择航次批次" class="page__full">
+            <el-option v-for="option in voyageOptions" :key="option.value" :label="option.label" :value="option.value" />
+          </el-select>
+          <div class="gb-hint">样带按航次归批送审；已提交批次的样带改动会导致审核单对账挂起，需院所重新对账。</div>
+        </el-form-item>
         <el-form-item label="调查人">
           <el-input v-model="form.observer" placeholder="如：林之遥" maxlength="20" />
         </el-form-item>
@@ -399,6 +463,10 @@ onMounted(() => {
   margin-left: 8px;
   font-size: 12px;
   color: #7c9995;
+}
+
+.page__full {
+  width: 100%;
 }
 
 .page__presets {

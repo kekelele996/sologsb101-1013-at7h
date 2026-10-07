@@ -17,6 +17,7 @@ import EmptyPanel from '@/components/common/EmptyPanel.vue'
 import { useReefStore } from '@/stores/reefStore'
 import { useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
+import { useReviewStore } from '@/stores/reviewStore'
 import { AREA_BUCKETS, createEmptyReefFilter, PROTECT_STATUSES } from '@/types/reef'
 import type { ProtectStatus, Reef } from '@/types/reef'
 import { bleachGrade, bleachIndex } from '@/utils/bleach'
@@ -27,6 +28,7 @@ const router = useRouter()
 const reefStore = useReefStore()
 const beltStore = useBeltStore()
 const surveyStore = useSurveyStore()
+const reviewStore = useReviewStore()
 
 const dialogVisible = ref(false)
 const editingId = ref<string | null>(null)
@@ -40,15 +42,16 @@ const form = reactive({
   manager: ''
 })
 
-/** 礁区卡片：汇总站位/样带/珊瑚记录数与平均白化指数 */
+/** 礁区卡片：汇总站位/样带/珊瑚记录数与平均白化指数（白化指数只按院所审定批次口径） */
 const cards = computed(() =>
   reefStore.filteredReefs.map((reef: Reef) => {
     const sites = reefStore.sites.filter((site) => site.reefId === reef.id)
     const siteIds = new Set(sites.map((site) => site.id))
     const belts = beltStore.belts.filter((belt) => siteIds.has(belt.siteId))
     const beltIds = new Set(belts.map((belt) => belt.id))
-    const corals = surveyStore.corals.filter((coral) => beltIds.has(coral.beltId))
-    const fishes = surveyStore.fishes.filter((fish) => beltIds.has(fish.beltId))
+    const approvedIds = reviewStore.scope.approvedBeltIds
+    const corals = surveyStore.corals.filter((coral) => beltIds.has(coral.beltId) && approvedIds.has(coral.beltId))
+    const fishes = surveyStore.fishes.filter((fish) => beltIds.has(fish.beltId) && approvedIds.has(fish.beltId))
     const index = bleachIndex(corals)
     return {
       reef,
@@ -211,7 +214,7 @@ watch(
       <div>
         <h2 class="page__title">礁区台账</h2>
         <p class="gb-hint">
-          维护礁区基本信息与保护区状态，卡片汇总站位总数、样带条数与平均白化指数。点击「站位布设」进入子页面。
+          维护礁区基本信息与保护区状态，卡片汇总站位总数、样带条数与平均白化指数（只按院所审定批次计）。点击「站位布设」进入子页面。
         </p>
       </div>
       <el-button type="primary" :icon="Plus" @click="openCreate">新建礁区</el-button>

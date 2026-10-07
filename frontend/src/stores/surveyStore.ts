@@ -1,6 +1,8 @@
 /**
  * 普查 store：维护珊瑚与鱼类筛选条件、录入草稿与覆盖度派生值。
  * 覆盖 /belts/:id/corals、/belts/:id/fishes 与 /coverage 三页。
+ * 结论口径：coverageRows / globalStats 只统计院所审定批次内未被驳回的样带
+ * （utils/scope.ts 统一口径，录入页的单样带回显不受此限）。
  */
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
@@ -11,6 +13,7 @@ import type { CountCategory, FishCount, SizeClass } from '@/types/fishCount'
 import type { Reef } from '@/types/reef'
 import type { Site } from '@/types/site'
 import type { Belt } from '@/types/belt'
+import { useReviewStore } from '@/stores/reviewStore'
 import { bleachGrade, bleachIndex, bleachedSharePct, coralCoveragePct, fishDensity, round } from '@/utils/bleach'
 
 /** 覆盖度汇总页筛选条件 */
@@ -39,6 +42,8 @@ export interface CoverageSummaryRow {
   reefName: string
   siteId: string
   siteNo: string
+  voyageId: string
+  voyageNo: string
   lengthM: number
   orientation: string
   surveyDate: string
@@ -56,6 +61,8 @@ export interface CoverageSummaryRow {
 }
 
 export const useSurveyStore = defineStore('survey', () => {
+  const reviewStore = useReviewStore()
+
   const corals = ref<CoralRecord[]>([])
   const fishes = ref<FishCount[]>([])
   const reefs = ref<Reef[]>([])
@@ -137,12 +144,14 @@ export const useSurveyStore = defineStore('survey', () => {
     return counts
   })
 
-  /** 覆盖度汇总行（全部样带） */
+  /** 覆盖度汇总行（只含院所审定批次内未被驳回的样带） */
   const coverageRows = computed<CoverageSummaryRow[]>(() =>
     belts.value
+      .filter((belt) => reviewStore.scope.approvedBeltIds.has(belt.id))
       .map((belt) => {
         const site = sites.value.find((item) => item.id === belt.siteId)
         const reef = site ? reefs.value.find((item) => item.id === site.reefId) : undefined
+        const voyage = reviewStore.voyages.find((item) => item.id === belt.voyageId)
         const beltCorals = corals.value.filter((coral) => coral.beltId === belt.id)
         const beltFishes = fishes.value.filter((fish) => fish.beltId === belt.id)
         const coverCmTotal = round(
@@ -165,6 +174,8 @@ export const useSurveyStore = defineStore('survey', () => {
           reefName: reef?.name ?? '未知礁区',
           siteId: site?.id ?? '',
           siteNo: site?.no ?? '—',
+          voyageId: voyage?.id ?? '',
+          voyageNo: voyage?.voyageNo ?? '—',
           lengthM: belt.lengthM,
           orientation: belt.orientation,
           surveyDate: belt.surveyDate,
@@ -212,26 +223,28 @@ export const useSurveyStore = defineStore('survey', () => {
       filter.value.onlyBleached
   )
 
-  /** 全局白化等级分布与总体指数 */
+  /** 全局白化等级分布与总体指数（同样只按审定批次口径） */
   const globalStats = computed(() => {
+    const approvedCorals = corals.value.filter((coral) => reviewStore.scope.approvedBeltIds.has(coral.beltId))
+    const approvedFishes = fishes.value.filter((fish) => reviewStore.scope.approvedBeltIds.has(fish.beltId))
     const distribution: Record<BleachLevel, number> = { 无: 0, 轻: 0, 中: 0, 重: 0, 死亡: 0 }
     BLEACH_LEVELS.forEach((level) => {
       distribution[level] = round(
-        corals.value.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
+        approvedCorals.filter((coral) => coral.bleachLevel === level).reduce((sum, coral) => sum + coral.coverCm, 0),
         1
       )
     })
-    const index = bleachIndex(corals.value)
+    const index = bleachIndex(approvedCorals)
     return {
-      coralCount: corals.value.length,
-      fishCount: fishes.value.length,
+      coralCount: approvedCorals.length,
+      fishCount: approvedFishes.length,
       coverCmTotal: round(
-        corals.value.reduce((sum, coral) => sum + coral.coverCm, 0),
+        approvedCorals.reduce((sum, coral) => sum + coral.coverCm, 0),
         1
       ),
       bleachIndex: index,
       grade: bleachGrade(index),
-      bleachedSharePct: bleachedSharePct(corals.value),
+      bleachedSharePct: bleachedSharePct(approvedCorals),
       distribution
     }
   })

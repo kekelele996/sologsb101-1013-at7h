@@ -2,6 +2,8 @@
  * useCoverage：按样带或站位汇总珊瑚覆盖率、白化占比与鱼类密度。
  * 被珊瑚计数页（/belts/:id/corals）、鱼类计数页（/belts/:id/fishes）
  * 与覆盖度汇总页（/coverage）消费。
+ * 注意：本 hook 是普查队工作台视角（全部已录数据）；礁区结论口径
+ * （只算院所审定批次）统一走 utils/scope.ts + surveyStore.coverageRows。
  */
 import { computed, type ComputedRef } from 'vue'
 import { storeToRefs } from 'pinia'

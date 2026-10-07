@@ -14,6 +14,8 @@ import RouteMissingPanel from '@/components/common/RouteMissingPanel.vue'
 import { useReefStore } from '@/stores/reefStore'
 import { useBeltStore } from '@/stores/beltStore'
 import { useSurveyStore } from '@/stores/surveyStore'
+import { useVoyageStore } from '@/stores/voyageStore'
+import { useReviewStore } from '@/stores/reviewStore'
 import {
   COMMON_FAMILIES,
   COUNT_CATEGORIES,
@@ -22,6 +24,7 @@ import {
 } from '@/types/fishCount'
 import type { CountCategory, FishCount, SizeClass } from '@/types/fishCount'
 import { fishDensity } from '@/utils/bleach'
+import { scopeNoteForBelt } from '@/utils/scope'
 import { initDatabase } from '@/utils/db'
 
 const route = useRoute()
@@ -29,11 +32,18 @@ const router = useRouter()
 const reefStore = useReefStore()
 const beltStore = useBeltStore()
 const surveyStore = useSurveyStore()
+const voyageStore = useVoyageStore()
+const reviewStore = useReviewStore()
 
 const beltId = computed(() => String(route.params.id ?? ''))
 const belt = computed(() => beltStore.beltById(beltId.value))
 const site = computed(() => (belt.value ? reefStore.siteById(belt.value.siteId) : null))
 const reef = computed(() => (site.value ? reefStore.reefById(site.value.reefId) : null))
+
+/** 批次口径提示：未审定 / 挂起 / 被驳回时说明本样带暂不计入礁区结论 */
+const scopeNote = computed(() =>
+  scopeNoteForBelt(belt.value, reviewStore.scope, voyageStore.voyages)
+)
 
 const dialogVisible = ref(false)
 const editingId = ref<string | null>(null)
@@ -279,6 +289,15 @@ onMounted(() => {
         <StatBadge label="鱼类密度" :value="stats.fishDensity" suffix="尾/100m²" tone="success" icon="TrendCharts" />
         <StatBadge label="科名数" :value="stats.familyCount" suffix="科" tone="default" icon="Files" />
       </div>
+
+      <el-alert
+        v-if="scopeNote"
+        type="warning"
+        show-icon
+        :closable="false"
+        :title="scopeNote"
+        description="此处为普查队工作台账（实时回显）；礁区结论只按院所审定批次计算。"
+      />
 
       <el-card v-if="stats.recordCount > 0" shadow="never" class="gb-panel">
         <div class="gb-panel-title">

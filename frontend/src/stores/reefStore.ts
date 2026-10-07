@@ -9,6 +9,7 @@ import type { Reef, ReefFilterState } from '@/types/reef'
 import { createEmptyReefFilter } from '@/types/reef'
 import type { Site, SiteFilterState } from '@/types/site'
 import { createEmptySiteFilter } from '@/types/site'
+import { useReviewStore } from '@/stores/reviewStore'
 import { bleachIndex, round } from '@/utils/bleach'
 
 export const useReefStore = defineStore('reef', () => {
@@ -197,11 +198,14 @@ export const useReefStore = defineStore('reef', () => {
     if (currentSiteId.value === id) selectSite(null)
   }
 
-  /** 站位 id → 样带数与平均白化指数（列表回显用） */
+  /** 站位 id → 样带数与平均白化指数（只按院所审定批次口径，列表回显用） */
   async function siteBleachAverages(): Promise<Record<string, number>> {
+    const reviewStore = useReviewStore()
     const result: Record<string, number> = {}
     for (const site of sites.value) {
-      const beltIds = (await db.belts.where('siteId').equals(site.id).toArray()).map((row) => row.id)
+      const beltIds = (await db.belts.where('siteId').equals(site.id).toArray())
+        .map((row) => row.id)
+        .filter((id) => reviewStore.scope.approvedBeltIds.has(id))
       if (beltIds.length === 0) {
         result[site.id] = 0
         continue
